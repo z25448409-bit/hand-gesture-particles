@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Gesture Particles - Shapes Collection</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        
+        /* 预览窗口样式 */
+        #video-container {
+            position: fixed; bottom: 20px; left: 20px; width: 200px; height: 150px;
+            border: 2px solid #00ffcc; border-radius: 12px; overflow: hidden;
+            z-index: 100; background: #111; box-shadow: 0 0 20px rgba(0,255,204,0.3);
+        }
+        #preview-canvas { width: 100%; height: 100%; transform: scaleX(-1); object-fit: cover; }
+        
+        /* 状态标签 */
+        .status-tag {
+            position: fixed; bottom: 180px; left: 20px; color: #00ffcc;
+            font-size: 12px; background: rgba(0,0,0,0.6); padding: 5px 10px;
+            border-radius: 4px; z-index: 100; backdrop-filter: blur(4px);
+        }
+
+        #canvas-container { width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+
+    <div id="video-container">
+        <canvas id="preview-canvas"></canvas>
+    </div>
+    <video id="input_video" style="display:none;"></video>
+    <div class="status-tag">系统状态：初始化中...</div>
+    <div id="canvas-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17.0/dist/lil-gui.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script>
+        // --- 1. Three.js 基础场景 ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // --- 2. 粒子系统构建 ---
+        const PARTICLE_COUNT = 15000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        const targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+
+        // --- 形状生成器 ---
+        const Shapes = {
+            // 1. 球体 (数学公式)
+            Sphere: (arr) => {
+                for(let i=0; i<PARTICLE_COUNT; i++) {
+                    const phi = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+                    const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+                    arr[i*3] = Math.cos(theta) * Math.sin(phi) * 2;
+                    arr[i*3+1] = Math.sin(theta) * Math.sin(phi) * 2;
+                    arr[i*3+2] = Math.cos(phi) * 2;
+                }
+            },
+            
+            // 2. LUCKY 文字 (Canvas 像素采样)
+            Lucky: (arr) => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = 240; canvas.height = 120;
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 50px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('LUCKY', 120, 70); // 在内存 Canvas 绘制文字
+                
+                const data = ctx.getImageData(0, 0, 240, 120).data;
+                const points = [];
+                // 扫描非透明像素点
+                for(let y=0; y<120; y++) {
+                    for(let x=0; x<240; x++) {
+                        if(data[(y*240 + x)*4] > 128) {
+                            points.push({x: (x-120)/20, y: (60-y)/20}); // 将像素坐标映射到 Three 空间
+                        }
+                    }
+                }
+                
+                // 将采样的点填入目标数组（粒子复用）
+                for(let i=0; i<PARTICLE_COUNT; i++) {
+                    const p = points[i % points.length];
+                    arr[i*3] = p.x + (Math.random()-0.5)*0.1; // 增加轻微抖动，让文字看起来更厚实
+                    arr[i*3+1] = p.y + (Math.random()-0.5)*0.1;
+                    arr[i*3+2] = (Math.random()-0.5)*0.2; // 增加 Z 轴深度
+                }
+            },
+
+            // 3. 圣诞树 (3D 模型数学组合)
+            ChristmasTree: (arr) => {
+                for(let i=0; i<PARTICLE_COUNT; i++) {
+                    let x, y, z;
+                    
+                    if(i < PARTICLE_COUNT * 0.9) { // 90% 粒子用于树冠 (Cone)
+                        // 随机高度 h 从 0 到 树高 3
+                        const h = Math.random() * 3;
+                        // 树冠顶部小，底部大：半径 r = f(h)
+                        const radius_at_h = (3 - h) * 0.5;
+                        const angle = Math.random() * Math.PI * 2;
+                        // 粒子分布在圆锥体的表面
+                        x = Math.cos(angle) * Math.sqrt(Math.random()) * radius_at_h;
+                        z = Math.sin(angle) * Math.sqrt(Math.random()) * radius_at_h;
+                        y = h - 1.5; // 居中
+                    } else { // 10% 粒子用于树干 (Cylinder)
+                        const angle = Math.random() * Math.PI * 2;
+                        const r = 0.2; // 树干半径
+                        const h = Math.random() * 1; // 树干高度
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        y = h - 2.5; // 位于树冠下方
+                    }
+                    
+                    arr[i*3] = x;
+                    arr[i*3+1] = y;
+                    arr[i*3+2] = z;
+                }
+            }
+        };
+
+        // 初始模型
+        Shapes.Sphere(targetPositions);
+        // 随机分布初始位置
+        for(let i=0; i<positions.length; i++) positions[i] = (Math.random()-0.5)*10;
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const material = new THREE.PointsMaterial({
+            color: 0x00ffcc,
+            size: 0.015,
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            opacity: 0.8
+        });
+
+        const points = new THREE.Points(geometry, material);
+        scene.add(points);
+
+        // --- 3. 手势识别与回显逻辑 ---
+        const videoElement = document.getElementById('input_video');
+        const previewCanvas = document.getElementById('preview-canvas');
+        const previewCtx = previewCanvas.getContext('2d');
+        const statusTag = document.querySelector('.status-tag');
+
+        let currentScale = 1.0, targetRotX = 0, targetRotY = 0;
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6 });
+
+        hands.onResults((results) => {
+            // 实时绘制摄像头画面到左下角 Canvas
+            previewCanvas.width = videoElement.videoWidth;
+            previewCanvas.height = videoElement.videoHeight;
+            if (results.image) previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                statusTag.innerText = "状态：控制中";
+                statusTag.style.color = "#00ffcc";
+                const lm = results.multiHandLandmarks[0];
+
+                // A. 缩放逻辑：大拇指(4)与食指(8)距离 (0.05~0.4 映射到 0.6~4.0)
+                const dist = Math.sqrt(Math.pow(lm[4].x - lm[8].x, 2) + Math.pow(lm[4].y - lm[8].y, 2));
+                currentScale = THREE.MathUtils.lerp(currentScale, dist * 10 + 0.1, 0.1);
+
+                // B. 旋转逻辑：以手腕(0)位置映射坐标
+                targetRotY = (lm[0].x - 0.5) * Math.PI * 2;
+                targetRotX = (lm[0].y - 0.5) * Math.PI;
+            } else {
+                statusTag.innerText = "状态：未发现手部";
+                statusTag.style.color = "#ffaa00";
+            }
+        });
+
+        const cam_mp = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cam_mp.start();
+
+        // --- 4. UI 控制面板 ---
+        const gui = new lil.GUI();
+        const settings = { shape: 'Sphere', color: '#00ffcc' };
+        gui.add(settings, 'shape', Object.keys(Shapes)).onChange(v => Shapes[v](targetPositions));
+        gui.addColor(settings, 'color').onChange(v => material.color.set(v));
+
+        // --- 5. 动画循环 ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 平滑应用旋转
+            points.rotation.y += (targetRotY - points.rotation.y) * 0.05;
+            points.rotation.x += (targetRotX - points.rotation.x) * 0.05;
+
+            // 平滑更新粒子位置 (缓动动画：当前位置向目标位置平滑移动)
+            const posAttr = geometry.attributes.position;
+            for(let i=0; i<PARTICLE_COUNT * 3; i++) {
+                posAttr.array[i] += (targetPositions[i] * currentScale - posAttr.array[i]) * 0.08;
+            }
+            posAttr.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // 窗口适配
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
